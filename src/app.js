@@ -21,6 +21,27 @@ function isValidCursorData(data) {
   );
 }
 
+function isValidProductId(id) {
+  return Number.isInteger(id) && id > 0;
+}
+
+// Root API route
+app.get("/", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    message: "Product Pagination API is live",
+    endpoints: {
+      health: "GET /health",
+      products: "GET /products?limit=8",
+      productById: "GET /products/:id",
+      createProduct: "POST /products",
+      updateProduct: "PATCH /products/:id",
+      deleteProduct: "DELETE /products/:id",
+    },
+  });
+});
+
+// Health check
 app.get("/health", async (req, res) => {
   try {
     const result = await pool.query("SELECT NOW() AS database_time");
@@ -40,6 +61,7 @@ app.get("/health", async (req, res) => {
   }
 });
 
+// Browse products with stable cursor pagination
 app.get("/products", async (req, res) => {
   try {
     const rawLimit = Number(req.query.limit) || 20;
@@ -52,29 +74,29 @@ app.get("/products", async (req, res) => {
     let cursorData = null;
     let snapshotData = null;
 
-    // Decode next-page cursor only when it is sent by client
     if (cursor) {
       cursorData = decodeCursor(cursor);
 
       if (!isValidCursorData(cursorData)) {
-        return res.status(400).json({ message: "Invalid cursor" });
+        return res.status(400).json({
+          message: "Invalid cursor",
+        });
       }
 
       cursorData.id = Number(cursorData.id);
     }
 
-    // Decode existing browsing-session snapshot
     if (snapshot) {
       snapshotData = decodeCursor(snapshot);
 
       if (!isValidCursorData(snapshotData)) {
-        return res.status(400).json({ message: "Invalid snapshot" });
+        return res.status(400).json({
+          message: "Invalid snapshot",
+        });
       }
 
       snapshotData.id = Number(snapshotData.id);
     } else {
-      // First page: capture stable upper boundary.
-      // updated_at_text preserves PostgreSQL microseconds exactly.
       const newestResult = await pool.query(`
         SELECT
           id,
@@ -103,7 +125,6 @@ app.get("/products", async (req, res) => {
       conditions.push(`category = $${values.length}`);
     }
 
-    // Include the snapshot product itself.
     if (snapshotData) {
       values.push(snapshotData.updatedAt, snapshotData.id);
 
@@ -112,7 +133,6 @@ app.get("/products", async (req, res) => {
       );
     }
 
-    // Exclude records already returned on previous page.
     if (cursorData) {
       values.push(cursorData.updatedAt, cursorData.id);
 
@@ -124,9 +144,7 @@ app.get("/products", async (req, res) => {
     values.push(limit + 1);
 
     const whereClause =
-      conditions.length > 0
-        ? `WHERE ${conditions.join(" AND ")}`
-        : "";
+      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
     const query = `
       SELECT
@@ -149,9 +167,7 @@ app.get("/products", async (req, res) => {
     const result = await pool.query(query, values);
 
     const hasMore = result.rows.length > limit;
-    const products = hasMore
-      ? result.rows.slice(0, limit)
-      : result.rows;
+    const products = hasMore ? result.rows.slice(0, limit) : result.rows;
 
     const lastProduct = products[products.length - 1];
 
@@ -163,7 +179,6 @@ app.get("/products", async (req, res) => {
           })
         : null;
 
-    // Remove internal field before sending API response.
     const responseProducts = products.map((product) => {
       const { updated_at_cursor, ...productData } = product;
       return productData;
@@ -189,12 +204,15 @@ app.get("/products", async (req, res) => {
   }
 });
 
+// Get one product by ID
 app.get("/products/:id", async (req, res) => {
   try {
     const productId = Number(req.params.id);
 
-    if (!Number.isInteger(productId) || productId <= 0) {
-      return res.status(400).json({ message: "Invalid product id" });
+    if (!isValidProductId(productId)) {
+      return res.status(400).json({
+        message: "Invalid product id",
+      });
     }
 
     const result = await pool.query(
@@ -207,21 +225,28 @@ app.get("/products/:id", async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: "Product not found" });
+      return res.status(404).json({
+        message: "Product not found",
+        productId,
+      });
     }
 
     res.status(200).json(result.rows[0]);
   } catch (error) {
     console.error("Get product failed:", error);
-    res.status(500).json({ message: "Failed to fetch product" });
+
+    res.status(500).json({
+      message: "Failed to fetch product",
+    });
   }
 });
 
+// Create product
 app.post("/products", async (req, res) => {
   try {
     const { name, category, price } = req.body;
 
-    if (!name || !category || price === undefined) {
+    if (!name?.trim() || !category?.trim() || price === undefined) {
       return res.status(400).json({
         message: "name, category and price are required",
       });
@@ -245,22 +270,28 @@ app.post("/products", async (req, res) => {
     );
 
     res.status(201).json({
-      message: "Product created",
+      message: "Product created successfully",
       product: result.rows[0],
     });
   } catch (error) {
     console.error("Create product failed:", error);
-    res.status(500).json({ message: "Failed to create product" });
+
+    res.status(500).json({
+      message: "Failed to create product",
+    });
   }
 });
 
+// Update product
 app.patch("/products/:id", async (req, res) => {
   try {
     const productId = Number(req.params.id);
     const { name, category, price } = req.body;
 
-    if (!Number.isInteger(productId) || productId <= 0) {
-      return res.status(400).json({ message: "Invalid product id" });
+    if (!isValidProductId(productId)) {
+      return res.status(400).json({
+        message: "Invalid product id",
+      });
     }
 
     if (name === undefined && category === undefined && price === undefined) {
@@ -269,8 +300,22 @@ app.patch("/products/:id", async (req, res) => {
       });
     }
 
+    if (name !== undefined && !name.trim()) {
+      return res.status(400).json({
+        message: "name cannot be empty",
+      });
+    }
+
+    if (category !== undefined && !category.trim()) {
+      return res.status(400).json({
+        message: "category cannot be empty",
+      });
+    }
+
+    let numericPrice = null;
+
     if (price !== undefined) {
-      const numericPrice = Number(price);
+      numericPrice = Number(price);
 
       if (!Number.isFinite(numericPrice) || numericPrice < 0) {
         return res.status(400).json({
@@ -291,27 +336,82 @@ app.patch("/products/:id", async (req, res) => {
         RETURNING id, name, category, price, created_at, updated_at
       `,
       [
-        name?.trim(),
-        category?.trim(),
-        price !== undefined ? Number(price) : null,
+        name !== undefined ? name.trim() : null,
+        category !== undefined ? category.trim() : null,
+        numericPrice,
         productId,
       ]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: "Product not found" });
+      return res.status(404).json({
+        message: "Product not found",
+        productId,
+      });
     }
 
     res.status(200).json({
-      message: "Product updated",
+      message: "Product updated successfully",
       product: result.rows[0],
     });
   } catch (error) {
     console.error("Update product failed:", error);
-    res.status(500).json({ message: "Failed to update product" });
+
+    res.status(500).json({
+      message: "Failed to update product",
+    });
   }
 });
 
+// Delete product
+app.delete("/products/:id", async (req, res) => {
+  try {
+    const productId = Number(req.params.id);
+
+    if (!isValidProductId(productId)) {
+      return res.status(400).json({
+        message: "Invalid product id",
+      });
+    }
+
+    const result = await pool.query(
+      `
+        DELETE FROM products
+        WHERE id = $1
+        RETURNING id, name, category, price
+      `,
+      [productId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        message: "Product not found or already deleted",
+        productId,
+      });
+    }
+
+    res.status(200).json({
+      message: "Product deleted successfully",
+      deletedProduct: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Delete product failed:", error);
+
+    res.status(500).json({
+      message: "Failed to delete product",
+    });
+  }
+});
+
+// Unknown route handler
+app.use((req, res) => {
+  res.status(404).json({
+    message: "Route not found",
+    method: req.method,
+    path: req.originalUrl,
+  });
+});
+
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
